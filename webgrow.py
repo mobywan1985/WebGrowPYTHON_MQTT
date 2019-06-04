@@ -19,8 +19,9 @@ import Adafruit_DHT
 import logging
 import requests
 import paho.mqtt.client as mqtt
+import random
 time.sleep(10)
-DEBUG = False
+DEBUG = True
 
 TRIGGER_NONE = 0
 TRIGGER_INTERVAL = 10
@@ -66,7 +67,11 @@ devices = session.query(Devices).all()
 settings = session.query(Settings).order_by(desc(Settings.id)).limit(1)
 sampling_rate = settings[0].sampling
 sensor_gpio = settings[0].gpio
+sensor_tadj = settings[0].tadj
+sensor_hadj = settings[0].hadj
+sensor_celsius= settings[0].sensor_celsius
 enable_sampling = settings[0].sensor
+service_topic = settings[0].topic
 device_objects = dict()
 mqttc = mqtt.Client("py_controller",transport='websockets')
 current_temp = 0
@@ -79,27 +84,57 @@ def read_sensor():
     try:
        global current_temp
        global current_humidity
-       humidity, temperature = Adafruit_DHT.read_retry(Adafruit_DHT.AM2302, sensor_gpio)
-       if humidity is not None and temperature is not None:
+       global sensor_tadj 
+       global sensor_hadj
+       
+       if(DEBUG):
+          temperature1 = random.randint(10,32)
+          temperature2 = random.randint(10,32)
+          temperature3 = random.randint(10,32)
+          temperature4 = random.randint(10,32)
+          humidity1 = random.randint(30,70)
+          humidity2 = random.randint(30,70)
+          humidity3 = random.randint(30,70)
+          humidity4 = random.randint(30,70)
+       else:
+          humidity1, temperature1 = Adafruit_DHT.read_retry(Adafruit_DHT.AM2302, sensor_gpio)
+          time.sleep(15)
+          humidity2, temperature2 = Adafruit_DHT.read_retry(Adafruit_DHT.AM2302, sensor_gpio)
+          time.sleep(15)
+          humidity3, temperature3 = Adafruit_DHT.read_retry(Adafruit_DHT.AM2302, sensor_gpio)
+          time.sleep(15)
+          humidity4, temperature4 = Adafruit_DHT.read_retry(Adafruit_DHT.AM2302, sensor_gpio)
+       
+       temps = [temperature1, temperature2, temperature3, temperature4]       
+       temps.sort()
+       humiditys = [humidity1, humidity2, humidity3, humidity4]
+       humiditys.sort()
+       
+       print(temps)
+       print(humiditys)
+       if humiditys[2] is not None and temps[2] is not None:
           print('Success reading sensor!')
-          if(humidity > 100):
+          if(humiditys[2] > 100):
              print('Bogus Read - Throwing results')
           else:
-             temperature = temperature * 9/5.0 + 32
-             current_temp = temperature
-             current_humidity = humidity
+             if(sensor_celsius):
+                current_temp = (temps[2])+sensor_tadj
+             else:
+                current_temp = (temps[2] * 9/5.0 + 32)+sensor_tadj
+             current_humidity = humiditys[2] + sensor_hadj
        else:
           print('Failed to get reading. Try again!')
 
     except:
        print('Error Occured!')
        
-    if(DEBUG):
-       current_temp = 75.5555555555
-       current_humidity = 50
+    #if(DEBUG):
+    #   current_temp = 75.5555555555
+    #   current_humidity = 50
        
        
     status = [current_temp, current_humidity, os.getpid()]
+    log_sensor()
     mqttc.publish("php_return_status",json.dumps(status))
 
 
@@ -417,7 +452,8 @@ class Device_Object:
                tmpsession.add(dlog)
             tmpsession.commit()
             tmpsession.close()
-            mqttc.publish("stat/webgrow/device/"+str(self.id)+"/POWER","OFF", qos=0, retain=True)
+            global service_topic
+            mqttc.publish("stat/"+service_topic+"/device/"+str(self.id)+"/POWER","OFF", qos=0, retain=True)
 
          
     def toggle_on(self):
@@ -440,7 +476,8 @@ class Device_Object:
                tmpsession.add(dlog)
             tmpsession.commit()
             tmpsession.close()
-            mqttc.publish("stat/webgrow/device/"+str(self.id)+"/POWER","ON", qos=0, retain=True)
+            global service_topic
+            mqttc.publish("stat/"+service_topic+"/device/"+str(self.id)+"/POWER","ON", qos=0, retain=True)
             
 
     def delete_device(self):
@@ -548,14 +585,14 @@ for device in devices:
 
 #Load Sensor
 dht_sensor_job = getScheduler().add_job(read_sensor, 'interval', seconds=sampling_rate, id='sensor1', name='Sensor Read')
-dht_sensor_logger_job = getScheduler().add_job(log_sensor, 'interval', seconds=300, id='sensor_logger1', name='Sensor Logging')
+#dht_sensor_logger_job = getScheduler().add_job(log_sensor, 'interval', seconds=300, id='sensor_logger1', name='Sensor Logging')
 if(enable_sampling == True):
 #   read_sensor()
    dht_sensor_job.resume()
-   dht_sensor_logger_job.resume()
+#   dht_sensor_logger_job.resume()
 else:
    dht_sensor_job.pause()
-   dht_sensor_logger_job.pause()
+#   dht_sensor_logger_job.pause()
 
 device_scheduler.start()
 session.close()
@@ -572,17 +609,33 @@ def reload_settings():
     global sampling_rate
     global sensor_gpio
     global enable_sampling
+    global service_topic
+    global sensor_tadj
+    global sensor_hadj
+    global sensor_celsius
     sampling_rate = settings[0].sampling
     sensor_gpio = settings[0].gpio
     enable_sampling = settings[0].sensor
+    sensor_celsius = settings[0].sensor_celsius
+    mqttc.unsubscribe("cmnd/"+service_topic+"/+/+/+")
+    mqttc.unsubscribe("stat/"+service_topic+"/+/+/+")
+    service_topic = settings[0].topic
+    mqttc.subscribe("cmnd/"+service_topic+"/+/+/+", 0)
+    mqttc.subscribe("stat/"+service_topic+"/+/+/+", 0)
+    sensor_tadj = settings[0].tadj
+    sensor_hadj = settings[0].hadj
     session.close()
+    
+    
+
+    
     if(enable_sampling == True):
        dht_sensor_job.reschedule(trigger='interval', seconds=sampling_rate)
        dht_sensor_job.resume()
-       dht_sensor_logger_job.resume()
+       #dht_sensor_logger_job.resume()
     if(enable_sampling == False):
        dht_sensor_job.pause()
-       dht_sensor_logger_job.pause()
+       #dht_sensor_logger_job.pause()
     for key in device_objects.keys():
        if(enable_sampling == False):
           device_objects[key]['object'].disable_sensor_device()
@@ -625,6 +678,7 @@ def on_connect(mqttc, obj, flags, rc):
 def on_message(mqttc, obj, msg):
     if(DEBUG):
        print(msg.topic + " " + str(msg.qos) + " " + str(msg.payload))
+    global service_topic
     global device_objects    
     if msg.topic.startswith("stat/") and msg.topic.endswith("POWER"):
        topics = msg.topic.split("/")
@@ -633,9 +687,8 @@ def on_message(mqttc, obj, msg):
                  if(msg.payload == "ON" and device_objects[key]['object'].state == 0):
                     device_objects[key]['object'].tasmota_state_on()
                  if(msg.payload == "OFF" and device_objects[key]['object'].state == 1):
-                    device_objects[key]['object'].tasmota_state_off()
-                    
-    if msg.topic.startswith("cmnd/webgrow/"):
+                    device_objects[key]['object'].tasmota_state_off()                    
+    if msg.topic.startswith("cmnd/"+service_topic+"/"):
        topics = msg.topic.split("/")
        has_gpio = False
        if(topics[2] == 'gpio'):
@@ -742,8 +795,9 @@ mqttc.on_connect = on_connect
 mqttc.connect("localhost", 9001, 60)
 mqttc.subscribe("php_function", 0)
 mqttc.subscribe("stat/+/POWER", 0)
-mqttc.subscribe("cmnd/webgrow/+/+/+", 0)
-mqttc.subscribe("stat/webgrow/+/+/+", 0)
+mqttc.subscribe("cmnd/"+service_topic+"/+/+/+", 0)
+mqttc.subscribe("stat/"+service_topic+"/+/+/+", 0)
+print(service_topic)
 mqttc.loop_forever()
 
 
