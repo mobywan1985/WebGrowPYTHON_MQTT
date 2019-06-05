@@ -21,7 +21,7 @@ import requests
 import paho.mqtt.client as mqtt
 import random
 time.sleep(10)
-DEBUG = True
+DEBUG = False
 
 TRIGGER_NONE = 0
 TRIGGER_INTERVAL = 10
